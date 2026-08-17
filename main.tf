@@ -1,0 +1,197 @@
+# see https://github.com/hashicorp/terraform
+terraform {
+  required_version = "1.15.8"
+  required_providers {
+    # see https://registry.terraform.io/providers/hashicorp/random
+    # see https://github.com/hashicorp/terraform-provider-random
+    random = {
+      source  = "hashicorp/random"
+      version = "3.9.0"
+    }
+    # see https://registry.terraform.io/providers/hashicorp/cloudinit
+    # see https://github.com/hashicorp/terraform-provider-cloudinit
+    cloudinit = {
+      source  = "hashicorp/cloudinit"
+      version = "2.4.0"
+    }
+    # see https://registry.terraform.io/providers/bpg/proxmox
+    # see https://github.com/bpg/terraform-provider-proxmox
+    proxmox = {
+      source  = "bpg/proxmox"
+      version = "0.111.1"
+    }
+  }
+}
+
+provider "proxmox" {
+  ssh {
+    username = var.proxmox_pve_node_username
+    node {
+      name    = var.proxmox_pve_node_name
+      address = var.proxmox_pve_node_address
+    }
+  }
+}
+
+variable "prefix" {
+  type    = string
+  default = "example-terraform-fedora-workstation"
+}
+
+variable "proxmox_pve_node_username" {
+  type    = string
+  default = "vagrant"
+}
+
+variable "proxmox_pve_node_name" {
+  type    = string
+  default = "pve"
+}
+
+variable "proxmox_pve_node_address" {
+  type = string
+}
+
+# see https://registry.terraform.io/providers/bpg/proxmox/0.111.1/docs/data-sources/virtual_environment_vms
+data "proxmox_virtual_environment_vms" "fedora_workstation_templates" {
+  tags = ["fedora-workstation-44-uefi", "template"]
+}
+
+# see https://registry.terraform.io/providers/bpg/proxmox/0.111.1/docs/data-sources/vm
+data "proxmox_vm" "fedora_workstation_template" {
+  node_name = data.proxmox_virtual_environment_vms.fedora_workstation_templates.vms[0].node_name
+  id        = data.proxmox_virtual_environment_vms.fedora_workstation_templates.vms[0].vm_id
+}
+
+# create a cloud-init cloud-config.
+# NB cloud-init executes **all** these parts regardless of their result. they
+#    should be idempotent.
+# NB the output is saved at /var/log/cloud-init-output.log
+# see cloud-init schema --system --annotate
+# see cloud-init status --long --wait
+# see journalctl -u cloud-init
+# see /run/cloud-init/*.log
+# see https://cloudinit.readthedocs.io/en/latest/topics/examples.html#disk-setup
+# see https://cloudinit.readthedocs.io/en/latest/topics/datasources/nocloud.html#datasource-nocloud
+# see https://pve.proxmox.com/wiki/Cloud-Init_Support
+# see https://registry.terraform.io/providers/hashicorp/cloudinit/latest/docs/data-sources/config
+data "cloudinit_config" "example" {
+  gzip          = false
+  base64_encode = false
+  part {
+    content_type = "text/cloud-config"
+    content      = <<-EOF
+    #cloud-config
+    fqdn: example.test
+    manage_etc_hosts: true
+    users:
+      - name: vagrant
+        lock_passwd: false
+        ssh_authorized_keys:
+          - ${jsonencode(trimspace(file("~/.ssh/id_rsa.pub")))}
+    chpasswd:
+      expire: false
+      users:
+        - name: vagrant
+          password: '$6$rounds=4096$NQ.EmIrGxn$rTvGsI3WIsix9TjWaDfKrt9tm3aa7SX7pzB.PSjbwtLbsplk1HsVzIrZbXwQNce6wmeJXhCq9YFJHDx9bXFHH.'
+    runcmd:
+      - echo 'Hello from cloud-config runcmd!'
+      - sed -i '/vagrant insecure public key/d' /home/vagrant/.ssh/authorized_keys
+    EOF
+  }
+}
+
+# see https://registry.terraform.io/providers/bpg/proxmox/0.111.1/docs/resources/virtual_environment_file
+resource "proxmox_virtual_environment_file" "example_ci_user_data" {
+  content_type = "snippets"
+  datastore_id = "local"
+  node_name    = data.proxmox_virtual_environment_vms.fedora_workstation_templates.vms[0].node_name
+  source_raw {
+    file_name = "${var.prefix}-ci-user-data.txt"
+    data      = data.cloudinit_config.example.rendered
+  }
+}
+
+# see https://registry.terraform.io/providers/bpg/proxmox/0.111.1/docs/resources/virtual_environment_vm
+resource "proxmox_virtual_environment_vm" "example" {
+  name        = var.prefix
+  description = "created from ${path.cwd}"
+  node_name   = "pve"
+  tags        = sort(["fedora-workstation-44-uefi", "example", "terraform"])
+  clone {
+    vm_id = data.proxmox_vm.fedora_workstation_template.id
+    full  = false
+  }
+  cpu {
+    type  = "host"
+    cores = 4
+  }
+  memory {
+    dedicated = 4 * 1024
+  }
+  network_device {
+    bridge = "vmbr0"
+  }
+  disk {
+    interface   = "scsi0"
+    file_format = "raw"
+    iothread    = true
+    ssd         = true
+    discard     = "on"
+    size        = 40
+  }
+  tpm_state {
+    version = "v2.0"
+  }
+  agent {
+    enabled = true
+    trim    = true
+  }
+  initialization {
+    ip_config {
+      ipv4 {
+        address = "dhcp"
+      }
+    }
+    user_data_file_id = proxmox_virtual_environment_file.example_ci_user_data.id
+  }
+  provisioner "remote-exec" {
+    inline = [
+      <<-EOF
+      set -eux
+      cloud-init --version
+      cloud-init status --long --wait
+      sudo cloud-init schema --system --annotate
+      EOF
+      , <<-EOF
+      id
+      uname -a
+      cat /etc/os-release
+      echo "machine-id is $(cat /etc/machine-id)"
+      hostname --fqdn
+      cat /etc/hosts
+      ip addr
+      sudo sfdisk -l
+      lsblk -x KNAME -o KNAME,SIZE,TRAN,SUBSYSTEMS,FSTYPE,UUID,LABEL,MODEL,SERIAL
+      mount | grep -E '^/dev/' | sort
+      df -h
+      EOF
+      , <<-EOF
+      sudo journalctl -k --grep=tpm --no-pager
+      sudo systemd-cryptenroll --tpm2-device=list
+      sudo tpm2 getekcertificate | openssl x509 -text -noout
+      sudo tpm2 pcrread
+      EOF
+    ]
+    connection {
+      type     = "ssh"
+      host     = self.ipv4_addresses[index(self.network_interface_names, "eth0")][0]
+      user     = "vagrant"
+      password = "vagrant"
+    }
+  }
+}
+
+output "ip" {
+  value = proxmox_virtual_environment_vm.example.ipv4_addresses[index(proxmox_virtual_environment_vm.example.network_interface_names, "eth0")][0]
+}
