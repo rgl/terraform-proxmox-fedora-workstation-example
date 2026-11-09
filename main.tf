@@ -1,24 +1,24 @@
 # see https://github.com/hashicorp/terraform
 terraform {
-  required_version = "1.15.8"
+  required_version = "1.17.1"
   required_providers {
     # see https://registry.terraform.io/providers/hashicorp/random
     # see https://github.com/hashicorp/terraform-provider-random
     random = {
       source  = "hashicorp/random"
-      version = "3.9.0"
+      version = "3.9.1"
     }
     # see https://registry.terraform.io/providers/hashicorp/cloudinit
     # see https://github.com/hashicorp/terraform-provider-cloudinit
     cloudinit = {
       source  = "hashicorp/cloudinit"
-      version = "2.4.0"
+      version = "2.4.1"
     }
     # see https://registry.terraform.io/providers/bpg/proxmox
     # see https://github.com/bpg/terraform-provider-proxmox
     proxmox = {
       source  = "bpg/proxmox"
-      version = "0.111.1"
+      version = "0.120.0"
     }
   }
 }
@@ -52,12 +52,12 @@ variable "proxmox_pve_node_address" {
   type = string
 }
 
-# see https://registry.terraform.io/providers/bpg/proxmox/0.111.1/docs/data-sources/virtual_environment_vms
+# see https://registry.terraform.io/providers/bpg/proxmox/0.120.0/docs/data-sources/virtual_environment_vms
 data "proxmox_virtual_environment_vms" "fedora_workstation_templates" {
-  tags = ["fedora-workstation-44-uefi", "template"]
+  tags = ["fedora-workstation-45-uefi", "template"]
 }
 
-# see https://registry.terraform.io/providers/bpg/proxmox/0.111.1/docs/data-sources/vm
+# see https://registry.terraform.io/providers/bpg/proxmox/0.120.0/docs/data-sources/vm
 data "proxmox_vm" "fedora_workstation_template" {
   node_name = data.proxmox_virtual_environment_vms.fedora_workstation_templates.vms[0].node_name
   id        = data.proxmox_virtual_environment_vms.fedora_workstation_templates.vms[0].vm_id
@@ -101,7 +101,7 @@ data "cloudinit_config" "example" {
   }
 }
 
-# see https://registry.terraform.io/providers/bpg/proxmox/0.111.1/docs/resources/virtual_environment_file
+# see https://registry.terraform.io/providers/bpg/proxmox/0.120.0/docs/resources/virtual_environment_file
 resource "proxmox_virtual_environment_file" "example_ci_user_data" {
   content_type = "snippets"
   datastore_id = "local"
@@ -112,12 +112,12 @@ resource "proxmox_virtual_environment_file" "example_ci_user_data" {
   }
 }
 
-# see https://registry.terraform.io/providers/bpg/proxmox/0.111.1/docs/resources/virtual_environment_vm
+# see https://registry.terraform.io/providers/bpg/proxmox/0.120.0/docs/resources/virtual_environment_vm
 resource "proxmox_virtual_environment_vm" "example" {
   name        = var.prefix
   description = "created from ${path.cwd}"
   node_name   = "pve"
-  tags        = sort(["fedora-workstation-44-uefi", "example", "terraform"])
+  tags        = sort(["fedora-workstation-45-uefi", "example", "terraform"])
   clone {
     vm_id = data.proxmox_vm.fedora_workstation_template.id
     full  = false
